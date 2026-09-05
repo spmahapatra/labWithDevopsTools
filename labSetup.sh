@@ -147,8 +147,7 @@ if [[ "$INSTALL_DESKTOP" == true ]]; then
     xfce4 \
     xfce4-terminal \
     dbus-x11 \
-    policykit-1 \
-    firefox-esr
+    policykit-1
 
   echo
   echo ">>> Configuring XRDP for XFCE..."
@@ -170,6 +169,15 @@ EOF
 
   chmod +x /etc/xrdp/startwm.sh
   systemctl restart xrdp
+
+  # Install Firefox via apt (enable universe) if not already present
+  if ! command -v firefox >/dev/null 2>&1; then
+    echo "Installing Firefox via apt (ensure universe enabled)"
+    add-apt-repository -y universe || true
+    apt-get update -y
+    apt-get install -y --no-install-recommends firefox || true
+  fi
+
 else
   echo
   echo ">>> Skipping desktop packages (use --with-desktop to install)"
@@ -354,7 +362,7 @@ if [[ "$INSTALL_DESKTOP" == true ]]; then
   cat >> /opt/DEVBOX-INFO.txt <<EOF
 - Minimal XFCE
 - XRDP (RDP access)
-- Firefox ESR
+- Firefox
 
 RDP:
 SERVER-IP:3389
