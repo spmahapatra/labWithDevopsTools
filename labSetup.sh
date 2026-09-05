@@ -4,10 +4,49 @@ set -euo pipefail
 LOG_FILE="/var/log/devbox-install.log"
 exec > >(tee -a "$LOG_FILE") 2>&1
 
+# Parse command-line arguments
+INSTALL_DESKTOP=false
+
+usage() {
+  cat <<EOF
+Usage: $0 [OPTIONS]
+
+OPTIONS:
+  --with-desktop    Install XFCE desktop, XRDP, and Firefox (optional)
+  --help            Show this help message
+
+Examples:
+  sudo $0                    # Server-only installation
+  sudo $0 --with-desktop     # Full installation with desktop environment
+EOF
+  exit 0
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-desktop)
+      INSTALL_DESKTOP=true
+      shift
+      ;;
+    --help|-h)
+      usage
+      ;;
+    *)
+      echo "Unknown option: $1"
+      usage
+      ;;
+  esac
+done
+
 echo "======================================================"
 echo " Remote DevOps Workstation Installer (Ultra Minimal)"
 echo " Ubuntu 22.04"
 echo " Started: $(date)"
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  echo " Mode: WITH Desktop (XFCE + XRDP)"
+else
+  echo " Mode: Server-only (no desktop)"
+fi
 echo "======================================================"
 
 if [[ "$EUID" -ne 0 ]]; then
@@ -34,7 +73,7 @@ apt-get update -y
 # apt-get upgrade -y
 
 echo
-echo ">>> Installing minimal base + desktop packages..."
+echo ">>> Installing minimal base packages..."
 apt-get install -y --no-install-recommends \
   ca-certificates \
   curl \
@@ -54,21 +93,26 @@ apt-get install -y --no-install-recommends \
   python3-pip \
   python3-venv \
   ansible \
-  xrdp \
-  xorgxrdp \
-  xfce4 \
-  xfce4-terminal \
-  dbus-x11 \
-  policykit-1 \
-  ufw \
-  firefox-esr
+  ufw
 
-echo
-echo ">>> Configuring XRDP for XFCE..."
-systemctl enable xrdp
-usermod -a -G ssl-cert xrdp || true
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  echo
+  echo ">>> Installing desktop + XRDP packages..."
+  apt-get install -y --no-install-recommends \
+    xrdp \
+    xorgxrdp \
+    xfce4 \
+    xfce4-terminal \
+    dbus-x11 \
+    policykit-1 \
+    firefox-esr
 
-cat > /etc/xrdp/startwm.sh <<'EOF'
+  echo
+  echo ">>> Configuring XRDP for XFCE..."
+  systemctl enable xrdp
+  usermod -a -G ssl-cert xrdp || true
+
+  cat > /etc/xrdp/startwm.sh <<'EOF'
 #!/bin/sh
 if [ -r /etc/profile ]; then
   . /etc/profile
@@ -81,8 +125,12 @@ export XDG_SESSION_DESKTOP=xfce
 exec startxfce4
 EOF
 
-chmod +x /etc/xrdp/startwm.sh
-systemctl restart xrdp
+  chmod +x /etc/xrdp/startwm.sh
+  systemctl restart xrdp
+else
+  echo
+  echo ">>> Skipping desktop packages (use --with-desktop to install)"
+fi
 
 echo
 echo ">>> Installing Docker..."
@@ -226,15 +274,21 @@ if ! command -v k9s >/dev/null 2>&1; then
 fi
 k9s version || true
 
-echo
-echo ">>> Browser check..."
-firefox --version || true
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  echo
+  echo ">>> Browser check..."
+  firefox --version || true
+fi
 
 echo
 echo ">>> Firewall rules (not enabling automatically)..."
 ufw allow 22/tcp
-ufw allow 3389/tcp
-echo "UFW configured for SSH + RDP only."
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  ufw allow 3389/tcp
+  echo "UFW configured for SSH + RDP."
+else
+  echo "UFW configured for SSH only."
+fi
 
 echo
 echo ">>> Creating workspace..."
@@ -249,6 +303,11 @@ rm -rf /var/lib/apt/lists/*
 rm -rf /tmp/* /var/tmp/*
 docker system prune -af --volumes || true
 
+DEVBOX_MODE="Server-only"
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  DEVBOX_MODE="Desktop (XFCE + XRDP)"
+fi
+
 cat > /opt/DEVBOX-INFO.txt <<EOF
 ========================================================
 Remote DevOps Workstation (Ultra Minimal)
@@ -256,16 +315,12 @@ Remote DevOps Workstation (Ultra Minimal)
 Created: $(date)
 Architecture: $(uname -m)
 OS: $(grep '^PRETTY_NAME=' /etc/os-release)
-
-RDP:
-SERVER-IP:3389
+Mode: $DEVBOX_MODE
 
 Workspace:
 /opt/workspace
 
 Installed:
-- Minimal XFCE + XRDP
-- Firefox ESR
 - Docker
 - Node.js
 - AWS CLI
@@ -276,6 +331,21 @@ Installed:
 - Ansible
 - k9s
 
+EOF
+
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  cat >> /opt/DEVBOX-INFO.txt <<EOF
+- Minimal XFCE
+- XRDP (RDP access)
+- Firefox ESR
+
+RDP:
+SERVER-IP:3389
+
+EOF
+fi
+
+cat >> /opt/DEVBOX-INFO.txt <<EOF
 Docker root:
 $(docker info 2>/dev/null | grep -i "Docker Root Dir" || echo "Unknown")
 
@@ -283,6 +353,7 @@ Installation log:
 /var/log/devbox-install.log
 ========================================================
 EOF
+
 chmod 600 /opt/DEVBOX-INFO.txt
 
 # ======================================================
@@ -309,10 +380,14 @@ echo "========================================================" > "$STATUS_FILE"
 echo "DEVBOX FINAL STATUS REPORT" >> "$STATUS_FILE"
 echo "Generated: $(date)" >> "$STATUS_FILE"
 echo "Host: $(hostname)" >> "$STATUS_FILE"
+echo "Mode: $DEVBOX_MODE" >> "$STATUS_FILE"
 echo "========================================================" >> "$STATUS_FILE"
 echo >> "$STATUS_FILE"
 
-check_cmd "XRDP service active" "systemctl is-active --quiet xrdp"
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  check_cmd "XRDP service active" "systemctl is-active --quiet xrdp"
+fi
+
 check_cmd "Docker service active" "systemctl is-active --quiet docker"
 check_cmd "Docker CLI" "command -v docker"
 check_cmd "Docker Compose" "docker compose version"
@@ -325,7 +400,10 @@ check_cmd "Terraform" "command -v terraform"
 check_cmd "Minikube" "command -v minikube"
 check_cmd "Ansible" "command -v ansible"
 check_cmd "k9s" "command -v k9s"
-check_cmd "Firefox" "command -v firefox"
+
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  check_cmd "Firefox" "command -v firefox"
+fi
 
 {
   echo
@@ -343,7 +421,9 @@ check_cmd "Firefox" "command -v firefox"
   echo "Minikube:    $(minikube version --short 2>/dev/null || minikube version 2>/dev/null | head -1 || echo N/A)"
   echo "Ansible:     $(ansible --version 2>/dev/null | head -1 || echo N/A)"
   echo "k9s:         $(k9s version 2>/dev/null | head -1 || echo N/A)"
-  echo "Firefox:     $(firefox --version 2>/dev/null || echo N/A)"
+  if [[ "$INSTALL_DESKTOP" == true ]]; then
+    echo "Firefox:     $(firefox --version 2>/dev/null || echo N/A)"
+  fi
   echo
   echo "Docker Root: $(docker info 2>/dev/null | awk -F': ' '/Docker Root Dir/ {print $2}' || echo N/A)"
   echo
@@ -370,7 +450,9 @@ chmod 600 "$STATUS_FILE"
 
 echo
 echo ">>> Status checks"
-systemctl --no-pager --full status xrdp | head -15 || true
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  systemctl --no-pager --full status xrdp | head -15 || true
+fi
 docker ps || true
 ss -lntp | grep -E ':(22|3389)\b' || true
 
@@ -380,14 +462,26 @@ cat "$STATUS_FILE"
 
 echo
 echo "======================================================"
-echo " INSTALLATION COMPLETE (MINIMAL XFCE + XRDP)"
-echo "======================================================"
-echo "Next:"
-echo "1) Reboot: sudo reboot"
-echo "2) RDP to: SERVER-IP:3389"
-echo "3) Start minikube (small footprint):"
-echo "   minikube start --driver=docker --memory=2200 --cpus=2 --disk-size=6000mb"
-echo "4) Review reports:"
-echo "   sudo cat /opt/DEVBOX-INFO.txt"
-echo "   sudo cat /opt/DEVBOX-STATUS.txt"
+if [[ "$INSTALL_DESKTOP" == true ]]; then
+  echo " INSTALLATION COMPLETE (MINIMAL XFCE + XRDP)"
+  echo "======================================================"
+  echo "Next:"
+  echo "1) Reboot: sudo reboot"
+  echo "2) RDP to: SERVER-IP:3389"
+  echo "3) Start minikube (small footprint):"
+  echo "   minikube start --driver=docker --memory=2200 --cpus=2 --disk-size=6000mb"
+  echo "4) Review reports:"
+  echo "   sudo cat /opt/DEVBOX-INFO.txt"
+  echo "   sudo cat /opt/DEVBOX-STATUS.txt"
+else
+  echo " INSTALLATION COMPLETE (SERVER-ONLY)"
+  echo "======================================================"
+  echo "Next:"
+  echo "1) Reboot: sudo reboot"
+  echo "2) Start minikube (small footprint):"
+  echo "   minikube start --driver=docker --memory=2200 --cpus=2 --disk-size=6000mb"
+  echo "3) Review reports:"
+  echo "   sudo cat /opt/DEVBOX-INFO.txt"
+  echo "   sudo cat /opt/DEVBOX-STATUS.txt"
+fi
 echo "======================================================"
