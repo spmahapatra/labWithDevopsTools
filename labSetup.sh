@@ -57,9 +57,6 @@ fi
 export DEBIAN_FRONTEND=noninteractive
 REAL_USER="${SUDO_USER:-ubuntu}"
 
-# Recommended: point this to your mounted disk for Docker storage
-DOCKER_DATA_ROOT="/mnt/docker-data"
-
 echo
 echo ">>> Detecting system..."
 echo "Architecture: $(uname -m)"
@@ -139,39 +136,13 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 systemctl enable docker
-systemctl stop docker
-
-echo
-echo ">>> Configuring Docker data-root (if mounted)..."
-if mountpoint -q "$(dirname "$DOCKER_DATA_ROOT")" || mountpoint -q "$DOCKER_DATA_ROOT"; then
-  mkdir -p "$DOCKER_DATA_ROOT"
-
-  if [[ -d /var/lib/docker ]] && [[ ! -L /var/lib/docker ]]; then
-    rsync -aHAX --delete /var/lib/docker/ "$DOCKER_DATA_ROOT"/ || true
-    mv /var/lib/docker "/var/lib/docker.bak.$(date +%s)" || true
-  fi
-
-  mkdir -p /etc/docker
-  cat > /etc/docker/daemon.json <<EOF
-{
-  "data-root": "$DOCKER_DATA_ROOT",
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
-}
-EOF
-else
-  echo "WARNING: ${DOCKER_DATA_ROOT} mount not found; Docker remains on root disk."
-fi
-
 systemctl start docker
-usermod -aG docker "$REAL_USER" || true
 
 echo "Docker version:"
 docker --version || true
 docker info | grep -i "Docker Root Dir" || true
+
+usermod -aG docker "$REAL_USER" || true
 
 echo
 echo ">>> Installing Node.js LTS..."
@@ -346,7 +317,7 @@ EOF
 fi
 
 cat >> /opt/DEVBOX-INFO.txt <<EOF
-Docker root:
+Docker Root:
 $(docker info 2>/dev/null | grep -i "Docker Root Dir" || echo "Unknown")
 
 Installation log:
