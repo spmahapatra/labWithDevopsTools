@@ -62,6 +62,52 @@ echo ">>> Detecting system..."
 echo "Architecture: $(uname -m)"
 grep -E '^(NAME|VERSION|PRETTY_NAME)=' /etc/os-release || true
 
+# Check for an extra NVMe disk and, if present and unformatted, format and mount it
+DISK="/dev/nvme1n1"
+MOUNT_POINT="/demo_mnt"
+
+echo
+echo ">>> Checking for additional disk: $DISK"
+if [[ -b "$DISK" ]]; then
+  echo "Found block device $DISK"
+  # Detect partitions (nvme devices use p1, p2 ...)
+  if lsblk -n -o NAME "$DISK" | grep -qE "${DISK##*/}p[0-9]+"; then
+    echo "Disk $DISK contains partitions — skipping automatic formatting to avoid data loss."
+  else
+    FSTYPE="$(blkid -s TYPE -o value "$DISK" || true)"
+    if [[ -z "$FSTYPE" ]]; then
+      echo "Disk appears unformatted. Showing partition table:"
+      fdisk -l "$DISK" || true
+
+      echo "Formatting $DISK as ext4 (this will destroy any data on the device)"
+      mkfs.ext4 -F "$DISK"
+
+      echo "Creating mount point $MOUNT_POINT and mounting $DISK"
+      mkdir -p "$MOUNT_POINT"
+      mount "$DISK" "$MOUNT_POINT"
+
+      # Add to fstab so it persists across reboots (use nofail to allow boot even if device missing)
+      if ! grep -qs "^$DISK\s" /etc/fstab; then
+        echo "$DISK $MOUNT_POINT ext4 defaults,nofail 0 2" >> /etc/fstab
+      fi
+
+      echo "Mounted $DISK at $MOUNT_POINT and updated /etc/fstab"
+    else
+      echo "Disk $DISK already has filesystem type: $FSTYPE"
+      # Mount if not already mounted
+      if ! grep -qs "$DISK" /proc/mounts; then
+        echo "Mounting existing filesystem from $DISK to $MOUNT_POINT"
+        mkdir -p "$MOUNT_POINT"
+        mount "$DISK" "$MOUNT_POINT" || true
+      else
+        echo "$DISK is already mounted"
+      fi
+    fi
+  fi
+else
+  echo "$DISK not present — skipping disk setup"
+fi
+
 echo
 echo ">>> Updating apt metadata..."
 apt-get update -y
