@@ -83,3 +83,6 @@ This repository contains a convenience installer script and README. Use at your 
 ---
 
 Created from: `labSetup.sh`
+
+-- To connect to this lab 
+git remote add localhost ssh://git@localhost:7722/root/juice-shop
