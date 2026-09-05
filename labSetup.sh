@@ -9,18 +9,20 @@ exec > >(tee -a "$LOG_FILE") 2>&1
 # ======================================================
 
 INSTALL_DESKTOP=false
+DEPLOY_FIREFOX=false
 
 usage() {
   cat <<EOF
 Usage: $0 [OPTIONS]
 
 OPTIONS:
-  --with-desktop    Install XFCE desktop, XRDP, and Firefox
-  --help            Show this help message
+  --with-desktop       Install XFCE desktop and XRDP
+  --deploy-firefox     Deploy Firefox (only valid with --with-desktop)
+  --help               Show this help message
 
 Examples:
   sudo $0
-  sudo $0 --with-desktop
+  sudo $0 --with-desktop --deploy-firefox
 EOF
   exit 0
 }
@@ -29,6 +31,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --with-desktop)
       INSTALL_DESKTOP=true
+      shift
+      ;;
+    --deploy-firefox)
+      DEPLOY_FIREFOX=true
       shift
       ;;
     --help|-h)
@@ -50,10 +56,15 @@ echo " Remote DevOps Workstation (Ultra Minimal)"
 echo " Ubuntu 22.04"
 echo " Started: $(date)"
 
+echo -n " Mode: "
 if [[ "$INSTALL_DESKTOP" == true ]]; then
-  echo " Mode: WITH Desktop (XFCE + XRDP + Firefox)"
+  if [[ "$DEPLOY_FIREFOX" == true ]]; then
+    echo "WITH Desktop (XFCE + XRDP + Firefox)"
+  else
+    echo "WITH Desktop (XFCE + XRDP, Firefox NOT deployed)"
+  fi
 else
-  echo " Mode: Server-only (no desktop)"
+  echo "Server-only (no desktop)"
 fi
 
 echo "======================================================"
@@ -221,7 +232,7 @@ apt-get install -y --no-install-recommends \
   ufw
 
 # ======================================================
-# Desktop + XRDP + Firefox
+# Desktop + XRDP (+ optional Firefox)
 # ======================================================
 
 if [[ "$INSTALL_DESKTOP" == true ]]; then
@@ -237,51 +248,49 @@ if [[ "$INSTALL_DESKTOP" == true ]]; then
     dbus-x11 \
     policykit-1
 
-  # ----------------------------------------------------
-  # Firefox
-  #
-  # Ubuntu 22.04 provides Firefox as a Snap transitional
-  # package. We intentionally install the Mozilla DEB
-  # package instead.
-  # ----------------------------------------------------
+  if [[ "$DEPLOY_FIREFOX" == true ]]; then
 
-  echo
-  echo ">>> Configuring Mozilla Firefox APT repository..."
+    # ----------------------------------------------------
+    # Firefox
+    #
+    # Ubuntu 22.04 provides Firefox as a Snap transitional
+    # package. We intentionally install the Mozilla DEB
+    # package instead.
+    # ----------------------------------------------------
 
-  install -d -m 0755 /etc/apt/keyrings
+    echo
+    echo ">>> Configuring Mozilla Firefox APT repository..."
 
-  wget -q \
-    https://packages.mozilla.org/apt/repo-signing-key.gpg \
-    -O /etc/apt/keyrings/packages.mozilla.org.asc
+    install -d -m 0755 /etc/apt/keyrings
 
-  # Verify Mozilla signing key
-  echo
-  echo ">>> Verifying Mozilla repository signing key..."
+    wget -q \
+      https://packages.mozilla.org/apt/repo-signing-key.gpg \
+      -O /etc/apt/keyrings/packages.mozilla.org.asc
 
-  KEY_FINGERPRINT="$(
-    gpg --show-keys --with-colons \
-      /etc/apt/keyrings/packages.mozilla.org.asc 2>/dev/null |
-      awk -F: '$1=="fpr" {print $10; exit}'
-  )"
+    # Verify Mozilla signing key
+    echo
+    echo ">>> Verifying Mozilla repository signing key..."
 
-  EXPECTED_FINGERPRINT="35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
+    KEY_FINGERPRINT="$({ gpg --show-keys --with-colons /etc/apt/keyrings/packages.mozilla.org.asc 2>/dev/null || true; } | awk -F: '$1=="fpr" {print $10; exit}')"
 
-  if [[ "$KEY_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]]; then
-    echo "ERROR: Mozilla signing key fingerprint does not match."
-    echo "Expected: $EXPECTED_FINGERPRINT"
-    echo "Found:    $KEY_FINGERPRINT"
-    exit 1
-  fi
+    EXPECTED_FINGERPRINT="35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3"
 
-  echo "Mozilla signing key verified."
+    if [[ "$KEY_FINGERPRINT" != "$EXPECTED_FINGERPRINT" ]]; then
+      echo "ERROR: Mozilla signing key fingerprint does not match."
+      echo "Expected: $EXPECTED_FINGERPRINT"
+      echo "Found:    $KEY_FINGERPRINT"
+      exit 1
+    fi
 
-  # Add Mozilla repository
-  cat > /etc/apt/sources.list.d/mozilla.list <<'EOF'
+    echo "Mozilla signing key verified."
+
+    # Add Mozilla repository
+    cat > /etc/apt/sources.list.d/mozilla.list <<'EOF'
 deb [signed-by=/etc/apt/keyrings/packages.mozilla.org.asc] https://packages.mozilla.org/apt mozilla main
 EOF
 
-  # Prefer Mozilla Firefox DEB
-  cat > /etc/apt/preferences.d/mozilla <<'EOF'
+    # Prefer Mozilla Firefox DEB
+    cat > /etc/apt/preferences.d/mozilla <<'EOF'
 Package: *
 Pin: origin packages.mozilla.org
 Pin-Priority: 1000
@@ -293,41 +302,48 @@ Pin: release o=Ubuntu
 Pin-Priority: -1
 EOF
 
-  # ----------------------------------------------------
-  # Remove existing Firefox Snap if present
-  # ----------------------------------------------------
+    # ----------------------------------------------------
+    # Remove existing Firefox Snap if present
+    # ----------------------------------------------------
 
-  if command -v snap >/dev/null 2>&1; then
+    if command -v snap >/dev/null 2>&1; then
 
-    if snap list firefox >/dev/null 2>&1; then
+      if snap list firefox >/dev/null 2>&1; then
 
-      echo
-      echo ">>> Removing existing Firefox Snap..."
+        echo
+        echo ">>> Removing existing Firefox Snap..."
 
-      snap remove firefox || true
+        snap remove firefox || true
+
+      fi
 
     fi
 
+    # Remove Ubuntu transitional Firefox package if present
+    apt-get remove -y firefox 2>/dev/null || true
+
+    echo
+    echo ">>> Updating APT after adding Mozilla repository..."
+
+    apt-get update -y
+
+    echo
+    echo ">>> Installing Firefox DEB from Mozilla..."
+
+    apt-get install -y --no-install-recommends firefox
+
+    echo
+    echo ">>> Firefox installation result:"
+
+    command -v firefox || true
+    firefox --version || true
+
+  else
+
+    echo
+    echo ">>> Skipping Firefox deployment (use --deploy-firefox to enable)."
+
   fi
-
-  # Remove Ubuntu transitional Firefox package if present
-  apt-get remove -y firefox 2>/dev/null || true
-
-  echo
-  echo ">>> Updating APT after adding Mozilla repository..."
-
-  apt-get update -y
-
-  echo
-  echo ">>> Installing Firefox DEB from Mozilla..."
-
-  apt-get install -y --no-install-recommends firefox
-
-  echo
-  echo ">>> Firefox installation result:"
-
-  command -v firefox || true
-  firefox --version || true
 
   # ----------------------------------------------------
   # XRDP / XFCE configuration
@@ -380,7 +396,7 @@ else
 
   echo
   echo ">>> Skipping desktop packages."
-  echo "    Use --with-desktop to install XFCE + XRDP + Firefox."
+  echo "    Use --with-desktop to install XFCE + XRDP (+ optional Firefox)."
 
 fi
 
@@ -487,10 +503,7 @@ if ! command -v kubectl >/dev/null 2>&1; then
 
   KVER="$(curl -fsSL https://dl.k8s.io/release/stable.txt)"
 
-  KARCH="$(
-    uname -m |
-    sed 's/x86_64/amd64/;s/aarch64/arm64/'
-  )"
+  KARCH="$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')"
 
   curl -fsSL \
     -o /usr/local/bin/kubectl \
@@ -611,11 +624,7 @@ if ! command -v k9s >/dev/null 2>&1; then
 
   if [[ -n "$K9S_ARCH" ]]; then
 
-    K9S_VERSION="$(
-      curl -fsSL \
-        https://api.github.com/repos/derailed/k9s/releases/latest |
-      jq -r .tag_name
-    )"
+    K9S_VERSION="$(curl -fsSL https://api.github.com/repos/derailed/k9s/releases/latest | jq -r .tag_name)"
 
     curl -fsSL \
       -o /tmp/k9s.tar.gz \
@@ -645,7 +654,7 @@ k9s version || true
 # Browser validation
 # ======================================================
 
-if [[ "$INSTALL_DESKTOP" == true ]]; then
+if [[ "$INSTALL_DESKTOP" == true && "$DEPLOY_FIREFOX" == true ]]; then
 
   echo
   echo ">>> Browser check..."
@@ -702,6 +711,28 @@ chown -R \
   /opt/scripts \
   2>/dev/null || true
 
+# ------------------------------------------------------
+# Ensure SSH key for real user (non-interactive, default settings)
+# ------------------------------------------------------
+
+echo
+echo ">>> Ensuring SSH key for user: $REAL_USER"
+
+USER_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6 || echo "/home/$REAL_USER")"
+
+mkdir -p "${USER_HOME}/.ssh"
+chmod 700 "${USER_HOME}/.ssh" || true
+
+# Only generate if no id_ed25519 or id_rsa exists
+if [[ ! -f "${USER_HOME}/.ssh/id_ed25519" && ! -f "${USER_HOME}/.ssh/id_rsa" ]]; then
+  echo ">>> Generating new SSH key (ed25519) for $REAL_USER"
+  sudo -u "$REAL_USER" ssh-keygen -t ed25519 -f "${USER_HOME}/.ssh/id_ed25519" -N "" -C "$REAL_USER@$(hostname)" -q || true
+  chown "$REAL_USER:$REAL_USER" "${USER_HOME}/.ssh/id_ed25519" "${USER_HOME}/.ssh/id_ed25519.pub" 2>/dev/null || true
+  chmod 600 "${USER_HOME}/.ssh/id_ed25519" 2>/dev/null || true
+else
+  echo ">>> SSH key already present for $REAL_USER; skipping generation."
+fi
+
 # ======================================================
 # Demo volume directories
 # ======================================================
@@ -742,16 +773,6 @@ apt-get clean
 rm -rf /var/lib/apt/lists/*
 rm -rf /tmp/* /var/tmp/*
 
-# IMPORTANT:
-# Do NOT automatically prune Docker volumes.
-#
-# This machine is intended for GitLab / DemoLab work.
-# Docker volumes may contain persistent application data.
-#
-# Therefore we intentionally DO NOT run:
-#
-# docker system prune -af --volumes
-
 docker system prune -af || true
 
 # ======================================================
@@ -761,7 +782,11 @@ docker system prune -af || true
 DEVBOX_MODE="Server-only"
 
 if [[ "$INSTALL_DESKTOP" == true ]]; then
-  DEVBOX_MODE="Desktop (XFCE + XRDP + Firefox)"
+  if [[ "$DEPLOY_FIREFOX" == true ]]; then
+    DEVBOX_MODE="Desktop (XFCE + XRDP + Firefox)"
+  else
+    DEVBOX_MODE="Desktop (XFCE + XRDP, Firefox NOT deployed)"
+  fi
 fi
 
 cat > /opt/DEVBOX-INFO.txt <<EOF
@@ -794,13 +819,29 @@ Installed:
 
 EOF
 
-if [[ "$INSTALL_DESKTOP" == true ]]; then
+if [[ "$INSTALL_DESKTOP" == true && "$DEPLOY_FIREFOX" == true ]]; then
 
   cat >> /opt/DEVBOX-INFO.txt <<EOF
 Desktop:
   - XFCE
   - XRDP
   - Firefox DEB from Mozilla APT repository
+
+RDP:
+  SERVER-IP:3389
+
+XRDP session:
+  XFCE + DBus
+
+EOF
+
+elif [[ "$INSTALL_DESKTOP" == true ]]; then
+
+  cat >> /opt/DEVBOX-INFO.txt <<EOF
+Desktop:
+  - XFCE
+  - XRDP
+  - Firefox NOT deployed (use --deploy-firefox to install)
 
 RDP:
   SERVER-IP:3389
@@ -871,11 +912,21 @@ if [[ "$INSTALL_DESKTOP" == true ]]; then
     "XRDP service active" \
     "systemctl is-active --quiet xrdp"
 
-  check_cmd \
-    "Firefox" \
-    "command -v firefox"
+  if [[ "$DEPLOY_FIREFOX" == true ]]; then
+    check_cmd \
+      "Firefox" \
+      "command -v firefox"
+  fi
 
 fi
+
+# ------------------------------------------------------
+# SSH key
+# ------------------------------------------------------
+
+check_cmd \
+  "SSH key for $REAL_USER" \
+  "test -f ${USER_HOME}/.ssh/id_ed25519.pub || test -f ${USER_HOME}/.ssh/id_rsa.pub"
 
 # ------------------------------------------------------
 # DevOps tools
@@ -978,12 +1029,9 @@ check_cmd \
     echo N/A
   )"
 
-  if [[ "$INSTALL_DESKTOP" == true ]]; then
+  if [[ "$INSTALL_DESKTOP" == true && "$DEPLOY_FIREFOX" == true ]]; then
 
-    echo "Firefox:      $(
-      firefox --version 2>/dev/null ||
-      echo N/A
-    )"
+    echo "Firefox:      $(firefox --version 2>/dev/null || echo N/A)"
 
   fi
 
@@ -1083,8 +1131,14 @@ echo "======================================================"
 
 if [[ "$INSTALL_DESKTOP" == true ]]; then
 
-  echo " INSTALLATION COMPLETE"
-  echo " XFCE + XRDP + Firefox + DevOps Tools"
+  if [[ "$DEPLOY_FIREFOX" == true ]]; then
+    echo " INSTALLATION COMPLETE"
+    echo " XFCE + XRDP + Firefox + DevOps Tools"
+  else
+    echo " INSTALLATION COMPLETE"
+    echo " XFCE + XRDP (Firefox not deployed) + DevOps Tools"
+  fi
+
   echo "======================================================"
 
   echo
